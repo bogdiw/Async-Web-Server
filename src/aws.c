@@ -84,11 +84,20 @@ struct connection *connection_create(int sockfd)
 {
 	/* TODO: Initialize connection structure on given socket. */
 
-	struct connection *conn = calloc(1, sizeof(struct connection));
+	struct connection *conn = malloc(sizeof(*conn));
+	
+	DIE(conn == NULL, "malloc");
 
 	conn->sockfd = sockfd;
-	conn->eventfd = eventfd(0, EFD_NONBLOCK);
-
+	memset(conn->recv_buffer, 0, BUFSIZ);
+	memset(conn->send_buffer, 0, BUFSIZ);
+	conn->recv_len = 0;
+	conn->send_len = 0;
+	conn->send_pos = 0;
+	conn->fd = -1;
+	conn->file_size = 0;
+	conn->file_pos = 0;
+	conn->state = STATE_INITIAL;
 	return conn;
 }
 
@@ -126,8 +135,8 @@ void connection_start_async_io(struct connection *conn)
 
 void connection_remove(struct connection *conn)
 {
-	w_epoll_remove_fd(epollfd, conn->sockfd);
 	close(conn->sockfd);
+	conn->state = STATE_CONNECTION_CLOSED;
 	free(conn);
 }
 
@@ -144,21 +153,27 @@ void handle_new_connection(void)
 	/* TODO: Add socket to epoll. */
 
 	/* TODO: Initialize HTTP_REQUEST parser. */
+	
+	int sockfd;
+	socklen_t addrlen = sizeof(struct sockaddr_in);
+	struct sockaddr_in addr;
 
-	struct sockaddr_in client_addr;
-	socklen_t client_len = sizeof(client_addr);
+	/* accept new connection */
+	sockfd = accept(listenfd, (SSA *) &addr, &addrlen);
+	DIE(sockfd < 0, "accept");
 
-	int newfd = accept(listenfd, (struct sockaddr *)&client_addr, &client_len);
+	dlog(LOG_INFO, "Accepted connection from %s:%d\n",
+		inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
 
-	fcntl(newfd, F_SETFL | fcntl(newfd, F_GETFL, 0) | O_NONBLOCK);
+	/* instantiate new connection handler */
+	struct connection *conn = connection_create(sockfd);
 
-	struct connection *conn = connection_create(newfd);
-
-	w_epoll_add_fd_in(epollfd, newfd);
+	/* add socket to epoll */
+	int rc = w_epoll_add_ptr_in(epollfd, sockfd, conn);
+	DIE(rc < 0, "w_epoll_add_fd_in");
 
 	http_parser_init(&(conn->request_parser), HTTP_REQUEST);
 	conn->request_parser.data = conn;
-
 }
 
 void receive_data(struct connection *conn)
@@ -259,6 +274,7 @@ int parse_header(struct connection *conn)
 		.on_headers_complete = 0,
 		.on_message_complete = 0
 	};
+	conn->request_parser.data = conn;
 	http_parser_execute(&conn->request_parser, &settings_on_path, conn->recv_buffer, conn->recv_len);
 	return 0;
 }
@@ -396,6 +412,8 @@ void handle_input(struct connection *conn)
 	case STATE_CONNECTION_CLOSED:
 		connection_remove(conn);
 		break;
+	case STATE_NO_STATE:
+		break;
 	default:
 		break;
 	}
@@ -468,43 +486,51 @@ void handle_client(uint32_t event, struct connection *conn)
 
 int main(void)
 {
-	epollfd = epoll_create(1);
-	DIE(epollfd < 0, "epoll_create");
+	int rc;
 
-	listenfd = socket(AF_INET, SOCK_STREAM, 0);
+	/* TODO: Initialize asynchronous operations. */
+
+	/* TODO: Initialize multiplexing. */
+	epollfd = w_epoll_create();
+	DIE(epollfd < 0, "w_epoll_create");
+	/* TODO: Create server socket. */
+	listenfd = tcp_create_listener(AWS_LISTEN_PORT, 
+		DEFAULT_LISTEN_BACKLOG);
 	DIE(listenfd < 0, "socket");
+	/* TODO: Add server socket to epoll object*/
 
-	struct sockaddr_in serv_addr;
-
-	memset(&serv_addr, 0, sizeof(serv_addr));
-	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_port = htons(AWS_LISTEN_PORT);
-	serv_addr.sin_addr.s_addr = INADDR_ANY;
-
-	bind(listenfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
-
-	listen(listenfd, MAX_CONNECTIONS);
-
-	epollfd = epoll_create(1);
-	DIE(epollfd < 0, "epoll_create");
-
-	w_epoll_add_fd_in(epollfd, listenfd);
-
+	rc = w_epoll_add_fd_in(epollfd, listenfd);
+	DIE(rc < 0, "w_epoll_add_fd_in");
+	
 	/* Uncomment the following line for debugging. */
 	dlog(LOG_INFO, "Server waiting for connections on port %d\n", AWS_LISTEN_PORT);
+
 	/* server main loop */
 	while (1) {
 		struct epoll_event rev;
 
-		int rc = epoll_wait(epollfd, &rev, 1, -1);
-
-		DIE(rc < 0, "epoll_wait");
-
-		if (rev.data.fd == listenfd)
-			handle_new_connection();
-
-		else
-			handle_client(rev.events, rev.data.ptr);
+		/* TODO: Wait for events. */
+		rc = w_epoll_wait_infinite(epollfd, &rev);
+		DIE(rc < 0, "w_epoll_wait_infinite");
+		/* TODO: Switch event types; consider
+		 *   - new connection requests (on server socket)
+		 *   - socket communication (on connection sockets)
+		 */
+		if (rev.data.fd == listenfd) {
+			dlog(LOG_DEBUG, "New connection\n");
+			if (rev.events & EPOLLIN)
+				handle_new_connection();
+		} else {
+			struct connection *conn = (struct connection *)rev.data.ptr;
+			if (rev.events & EPOLLIN) {
+				dlog(LOG_DEBUG, "New message\n");
+				handle_client(EPOLLIN, conn);
+			}
+			if (rev.events & EPOLLOUT) {
+				dlog(LOG_DEBUG, "Ready to send message\n");
+				handle_client(EPOLLOUT, conn);
+			}
+		}
 	}
 
 	return 0;
