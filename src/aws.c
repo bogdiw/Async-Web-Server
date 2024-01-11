@@ -216,7 +216,6 @@ void receive_data(struct connection *conn)
 	printf("--\n%s--\n", conn->recv_buffer);
 
 	parse_header(conn);
-	// aws_on_path_cb(&(conn->request_parser), conn->request_path, strlen(conn->request_path));
 	dlog(LOG_DEBUG, "FILENAME: %s\n", conn->request_path);
 	rc = connection_open_file(conn);
 	if (rc < 0) {
@@ -332,23 +331,12 @@ enum connection_state connection_send_static(struct connection *conn)
 	}
 	// send the file
 	if (conn->fd != -1) {
-		if (conn->file_size != 0) {
-			dlog(LOG_DEBUG, "Sending STATIC file to %s\n", abuffer);
+		while (conn->file_size > 0) {
 			rc = sendfile(conn->sockfd, conn->fd, NULL, conn->file_size);
 			DIE(rc < 0, "sendfile");
 			conn->file_size -= rc;
-			return 0;
-		} else {
-			dlog(LOG_DEBUG, "Completed STATIC send file to %s\n", abuffer);
-			rc = w_epoll_remove_ptr(epollfd, conn->sockfd, conn);
-			DIE(rc < 0, "w_epoll_remove_ptr");
-			connection_remove(conn);
-			return STATE_CONNECTION_CLOSED;
 		}
 	}
-
-	rc = w_epoll_update_ptr_in(epollfd, conn->sockfd, conn);
-	DIE(rc < 0, "w_epoll_update_ptr_in");
 
 	conn->state = STATE_DATA_SENT;
 	return STATE_DATA_SENT;
@@ -373,16 +361,15 @@ int connection_send_data(struct connection *conn)
 	}
 	
 	while (conn->send_len > 0) {
-		bytes_sent = send(conn->sockfd, conn->send_buffer, conn->send_len, 0);
+		bytes_sent = send(conn->sockfd, conn->send_buffer + conn->send_pos, conn->send_len, 0);
 
 		conn->send_len -= bytes_sent;
-		strncpy(conn->send_buffer, conn->send_buffer + bytes_sent, conn->send_len);
-
-		dlog(LOG_DEBUG, "Sending %s to %s\n", conn->send_buffer, abuffer);
+		conn->send_pos += bytes_sent;
 
 		printf("--\n%s--\n", conn->send_buffer);
 
 	}
+	dlog(LOG_DEBUG, "Sent %s\n", conn->send_buffer);
 	conn->state = STATE_HEADER_SENT;
 	return 0;
 }
@@ -396,14 +383,7 @@ int connection_send_dynamic(struct connection *conn)
 	if (conn == NULL) {
 		return -1;
 	}
-	if (conn->async_read_len == 0) {
-		connection_start_async_io(conn);
-		return 0;
-	}
-	if (conn->async_read_len < sizeof(conn->recv_buffer)) {
-		conn->state = STATE_SENDING_DATA;
-		return 0;
-	}
+	connection_start_async_io(conn);
 	connection_complete_async_io(conn);
 	return 0;
 }
