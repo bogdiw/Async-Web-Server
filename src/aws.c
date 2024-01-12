@@ -44,31 +44,27 @@ static int aws_on_path_cb(http_parser *p, const char *buf, size_t len)
 	return 0;
 }
 
+/* Prepare the connection buffer to send the reply header. */
 static void connection_prepare_send_reply_header(struct connection *conn)
 {
-	/* Prepare the connection buffer to send the reply header. */
 	memset(conn->send_buffer, 0, sizeof(conn->send_buffer));
 	sprintf(conn->send_buffer,
 			"HTTP/1.1 200 OK\r\nConnection: closed\r\n\r\n");
 	conn->send_len = strlen(conn->send_buffer);
 }
 
+/* Prepare the connection buffer to send the 404 header. */
 static void connection_prepare_send_404(struct connection *conn)
 {
-	/* TODO: Prepare the connection buffer to send the 404 header. */
 	memset(conn->send_buffer, 0, sizeof(conn->send_buffer));
     sprintf(conn->send_buffer,
             "HTTP/1.1 404 Not Found\r\nConnection: closed\r\n\r\n");
     conn->send_len = strlen(conn->send_buffer);
-
 }
 
+/* Get resource type depending on request path/filename. */
 static enum resource_type connection_get_resource_type(struct connection *conn)
 {
-	/* Get resource type depending on request path/filename. Filename should
-	 * point to the static or dynamic folder.
-	 */
-
 	dlog(LOG_DEBUG, "Filename: %s\n", conn->request_path);
 	if (!conn->have_path) {
         return RESOURCE_TYPE_NONE;
@@ -83,13 +79,11 @@ static enum resource_type connection_get_resource_type(struct connection *conn)
     return RESOURCE_TYPE_NONE;
 }
 
-
+/* Initialize connection structure on given socket. */
 struct connection *connection_create(int sockfd)
 {
-	/* Initialize connection structure on given socket. */
-
 	struct connection *conn = malloc(sizeof(*conn));
-	
+
 	DIE(conn == NULL, "malloc");
 
 	conn->sockfd = sockfd;
@@ -125,7 +119,7 @@ void connection_start_async_io(struct connection *conn)
 
 	// set the eventfd for notification
 	io_set_eventfd(&(conn->iocb), conn->eventfd);
-	
+
 	// add the eventfd to epoll
 	int rc = w_epoll_add_ptr_in(epollfd, conn->eventfd, conn);
 	DIE(rc < 0, "w_epoll_add_ptr_in");
@@ -152,6 +146,9 @@ void connection_remove(struct connection *conn)
 	w_epoll_remove_ptr(epollfd, conn->sockfd, conn);
 	close(conn->sockfd);
 	conn->state = STATE_NO_STATE;
+	if (conn->dynamic_buffer != NULL) {
+		free(conn->dynamic_buffer);
+	}
 	free(conn);
 }
 
@@ -255,7 +252,6 @@ int connection_open_file(struct connection *conn)
 
 /* Complete asynchronous operation. */
 void connection_complete_async_io(struct connection *conn) {
-
 	// wait for the eventfd to be signaled
     struct io_event events[1];
     struct timespec timeout = {0, 0};
@@ -354,7 +350,7 @@ int connection_send_data(struct connection *conn)
 	if (rc < 0) {
 		ERR("get_peer_address");
 	}
-	
+
 	while (conn->send_len > 0) {
 		bytes_sent = send(conn->sockfd, conn->send_buffer + conn->send_pos, conn->send_len, 0);
 
@@ -362,7 +358,6 @@ int connection_send_data(struct connection *conn)
 		conn->send_pos += bytes_sent;
 
 		printf("--\n%s--\n", conn->send_buffer);
-
 	}
 	dlog(LOG_DEBUG, "Sent %s\n", conn->send_buffer);
 	conn->state = STATE_HEADER_SENT;
@@ -480,7 +475,7 @@ void handle_client(uint32_t event, struct connection *conn)
 		break;
 	default:
 		break;
-	}	
+	}
 }
 
 int main(void)
@@ -492,14 +487,14 @@ int main(void)
 	DIE(epollfd < 0, "w_epoll_create");
 
 	/*  Create server socket. */
-	listenfd = tcp_create_listener(AWS_LISTEN_PORT, 
+	listenfd = tcp_create_listener(AWS_LISTEN_PORT,
 		DEFAULT_LISTEN_BACKLOG);
 	DIE(listenfd < 0, "socket");
 
 	/* Add server socket to epoll object*/
 	rc = w_epoll_add_fd_in(epollfd, listenfd);
 	DIE(rc < 0, "w_epoll_add_fd_in");
-	
+
 	// /* Uncomment the following line for debugging. */
 	// dlog(LOG_INFO, "Server waiting for connections on port %d\n", AWS_LISTEN_PORT);
 
