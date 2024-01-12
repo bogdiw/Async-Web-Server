@@ -75,6 +75,9 @@ struct connection {
 
 	/* HTTP_REQUEST parser */
 	http_parser request_parser;
+
+	/* Dynamic buffer used for dynamic content */
+	char *dynamic_buffer;
 };
 
 void handle_client(uint32_t event, struct connection *conn);
